@@ -1,0 +1,846 @@
+###
+===============================================================================
+Description:
+  An engine who handles the Messenger to hubot interactions which calls out the
+  Hidden Markov Model which parses the answers/replies to the messages received
+
+For full documentation
+  Please see READEME.md
+
+Messenger Hubot Documentation:
+  https://github.com/chen-ye/hubot-fb
+  See .env for Setup (API Keys and more)
+===============================================================================
+###
+
+Firebase                = require 'firebase'
+FirebaseTokenGenerator  = require 'firebase-token-generator'
+
+# Firebase Details
+process.env.FIREBASE_URL = "https://tiknay-33e91.firebaseio.com/";
+process.env.FIREBASE_SECRET = "U9pDQtrUW5i8BaWe9Ji6dktprJbrgcwXYdNLiwcP";
+
+{Response} = require 'hubot'
+hmm = require "./hmm"
+hmmHandler = require "./hmmHandler"
+autocorrect = require('autocorrect')()
+emojiStrip = require('emoji-strip')
+moment = require('moment')
+
+module.exports = (robot) ->
+
+    # Random Fun Facts
+    funFacts = ["CIT-U was founded on 1946.",
+                "CIT-U attained it's university status on July 7, 2010.",
+                "CIT-U, on the year 2000, was awarded as CHED – Center of Development For Excellence In Information Technology Education in Region VII.",
+                "On 2002, the Science and Technology building was constructed."]
+
+    ###
+    These are chats by the users that has static replies and does not
+    need any Hidden Markov Model.
+    These are usually commands by admins to the bot
+    ###
+    reservedWords = ["hello", "hi", "!help", "!overrideupdate", "what is your name", "how old are you", "!setthreshold", "!getthreshold", "!messageblast", "!handler"]
+
+    # Threshold which the bot replies base on pre-defined message if exceeds or equal the threshold
+    threshold = parseFloat(0.15)
+
+    # HMMs
+    ###
+    scholarships = new hmm
+    whyCIT = new hmm
+    admission = new hmm
+    cutOff = new hmm
+    info = new hmm
+    facts = new hmm
+    entranceSched = new hmm
+    tuition = new hmm
+    citPresident = new hmm
+    ssgPresident = new hmm
+    careers = new hmm
+    heads = new hmm
+    courses = new hmm
+    acadCalendar = new hmm
+    ###
+
+    handler = new hmmHandler
+
+    # Local Database
+    json = []
+
+    # Do not load unless configured
+    return robot.logger.warning "firebase-brain: FIREBASE_URL not set. Not attempting to load FireBase brain." unless process.env.FIREBASE_URL?
+
+    robot.logger.info "firebase-brain: Connecting to FireBase brain at #{process.env.FIREBASE_URL} "
+
+    # Turn off autosave until Firebase connected successfully
+    robot.brain.setAutoSave false
+
+    # expose this reference to the Robot
+    robot.firebaseBrain = new Firebase process.env.FIREBASE_URL
+    
+    # Log authentication
+    onAuthCallback = (authData) ->
+        if authData
+            robot.logger.info 'firebase-brain: Authenticated successfully'
+        else
+            robot.logger.info 'firebase-brain: Client unauthenticated.'
+
+    # Do authentication
+    authenticate = (authData) =>
+        robot.logger.info "firebase-brain: Attempting to authenticate using FIREBASE_SECRET"
+
+        tokenGenerator = new FirebaseTokenGenerator process.env.FIREBASE_SECRET
+        token = tokenGenerator.createToken({ "uid": "custom:hubot", "hubot": true });
+        
+        robot.firebaseBrain.authWithCustomToken token, (error, authData) ->
+            if error
+                robot.logger.warning 'firebase-brain: Login Failed!', error
+    
+    if process.env.FIREBASE_SECRET?
+        do authenticate
+        robot.firebaseBrain.offAuth authenticate
+        robot.firebaseBrain.offAuth onAuthCallback
+        robot.firebaseBrain.onAuth  onAuthCallback
+        
+    # Load the initial persistant brain
+    robot.firebaseBrain.once 'value', (data) ->
+        json = data.val()
+        ###
+        # Get scholarship data
+        scholarData = []
+        for i in [1..json['scholarship'].length - 1]
+            scholarData.push json['scholarship'][i].split(" ")
+        # Get why CIT data
+        whyCITData = []
+        for i in [1..json['whyCIT'].length - 1]
+            whyCITData.push json['whyCIT'][i].split(" ")
+        # Get admission data
+        admissionData = []
+        for i in [1..json['admission'].length - 1]
+            admissionData.push json['admission'][i].split(" ")
+        # Get cutt-off data
+        cutOffData = []
+        for i in [1..json['cutOff'].length - 1]
+            cutOffData.push json['cutOff'][i].split(" ")
+        # Get info data
+        infoData = []
+        for i in [1..json['info'].length - 1]
+            infoData.push json['info'][i].split(" ")
+        # Get facts data
+        factsData = []
+        for i in [1..json['facts'].length - 1]
+            factsData.push json['facts'][i].split(" ")
+        # Get Entrance Sched data
+        entranceSchedData = []
+        for i in [1..json['entranceSched'].length - 1]
+            entranceSchedData.push json['entranceSched'][i].split(" ")
+        # Get Tuition data
+        tuitionData = []
+        for i in [1..json['tuition'].length - 1]
+            tuitionData.push json['tuition'][i].split(" ")
+        # Get President data
+        citPresidentData = []
+        for i in [1..json['citPresident'].length - 1]
+            citPresidentData.push json['citPresident'][i].split(" ")
+        # Get SSG President data
+        ssgPresidentData = []
+        for i in [1..json['ssgPresident'].length - 1]
+            ssgPresidentData.push json['ssgPresident'][i].split(" ")
+        # Get Careers data
+        careersData = []
+        for i in [1..json['careers'].length - 1]
+            careersData.push json['careers'][i].split(" ")
+        # Get Heads data
+        headsData = []
+        for i in [1..json['heads'].length - 1]
+            headsData.push json['heads'][i].split(" ")
+        # Get Courses data
+        coursesData = []
+        for i in [1..json['courses'].length - 1]
+            coursesData.push json['courses'][i].split(" ")
+        # Get Academic Calendar data
+        acadCalendarData = []
+        for i in [1..json['acadCalendar'].length - 1]
+            acadCalendarData.push json['acadCalendar'][i].split(" ")
+
+        # Set Threshhold
+        threshold = parseFloat(json['botEnv']['threshold'])
+        
+        # Inititalize HMMs
+        scholarships.initialize( scholarData, scholarData.length )
+        whyCIT.initialize( whyCITData , whyCITData.length )
+        admission.initialize( admissionData , admissionData.length )
+        cutOff.initialize( cutOffData , cutOffData.length )
+        info.initialize( infoData , infoData.length )
+        facts.initialize( factsData , factsData.length )
+        entranceSched.initialize( entranceSchedData , entranceSchedData.length )
+        tuition.initialize( tuitionData, tuitionData.length )
+        citPresident.initialize( citPresidentData, citPresidentData.length )
+        ssgPresident.initialize( ssgPresidentData, ssgPresidentData.length )
+        careers.initialize( careersData, careersData.length )
+        heads.initialize( headsData, headsData.length )
+        courses.initialize( coursesData, coursesData.length )
+        acadCalendar.initialize( acadCalendarData, acadCalendarData.length )
+        ###
+        handler.initializeAll(json)
+
+    ###
+    Concat words then push to a database
+    @param words - words to be concatinated and pushed
+    @param pushTo - database to be pushed
+    ### 
+    cleanAndPush = (words, pushTo) ->
+        res = ""
+        for i in [0..words.length - 1]
+            res += words[i] + " "
+        json[pushTo].push res.trim()
+    
+    ###
+    Pushes variable json to firebase
+    ###
+    firebaseUpdate = () ->
+        # reestimate HMM
+        # Scholarship
+        scholarData = []
+        for i in [1..json['scholarship'].length - 1]
+            scholarData.push json['scholarship'][i].split(" ")
+        # Why CIT
+        whyCITData = []
+        for i in [1..json['whyCIT'].length - 1]
+            whyCITData.push json['whyCIT'][i].split(" ")
+        # Admission
+        admissionData = []
+        for i in [1..json['admission'].length - 1]
+            admissionData.push json['admission'][i].split(" ")
+        # Cut-off
+        cutOffData = []
+        for i in [1..json['cutOff'].length - 1]
+            cutOffData.push json['cutOff'][i].split(" ")
+        # Info
+        infoData = []
+        for i in [1..json['info'].length - 1]
+            infoData.push json['info'][i].split(" ")
+        # Facts
+        factsData = []
+        for i in [1..json['facts'].length - 1]
+            factsData.push json['facts'][i].split(" ")
+        # Entrance Schedule
+        entranceSchedData = []
+        for i in [1..json['entranceSched'].length - 1]
+            entranceSchedData.push json['entranceSched'][i].split(" ")
+        # Entrance Schedule
+        tuitionData = []
+        for i in [1..json['tuition'].length - 1]
+            tuitionData.push json['tuition'][i].split(" ")
+        # CIT President
+        citPresidentData = []
+        for i in [1..json['citPresident'].length - 1]
+            citPresidentData.push json['citPresident'][i].split(" ")
+        # SSG President
+        ssgPresidentData = []
+        for i in [1..json['ssgPresident'].length - 1]
+            ssgPresidentData.push json['ssgPresident'][i].split(" ")
+        # Careers
+        careersData = []
+        for i in [1..json['careers'].length - 1]
+            careersData.push json['careers'][i].split(" ")
+        # Heads
+        headsData = []
+        for i in [1..json['heads'].length - 1]
+            headsData.push json['heads'][i].split(" ")
+        # Courses
+        coursesData = []
+        for i in [1..json['courses'].length - 1]
+            coursesData.push json['courses'][i].split(" ")
+        # Academic Calendar
+        acadCalendarData = []
+        for i in [1..json['acadCalendar'].length - 1]
+            acadCalendarData.push json['acadCalendar'][i].split(" ")
+
+        # Initialize HMMs
+        scholarships.initialize( scholarData, scholarData.length )
+        whyCIT.initialize( whyCITData, whyCITData.length )
+        admission.initialize( admissionData, admissionData.length )
+        cutOff.initialize( cutOffData, cutOffData.length )
+        info.initialize( infoData, infoData.length )
+        facts.initialize( factsData, factsData.length )
+        entranceSched.initialize( entranceSchedData , entranceSchedData.length )
+        tuition.initialize( tuitionData, tuitionData.length )
+        citPresident.initialize( citPresidentData, citPresidentData.length )
+        ssgPresident.initialize( ssgPresidentData, ssgPresidentData.length )
+        careers.initialize( careersData, careersData.length )
+        heads.initialize( headsData, headsData.length )
+        courses.initialize( coursesData, coursesData.length )
+        acadCalendar.initialize( acadCalendarData, acadCalendarData.length )
+        
+        console.log "Updated Firebase"
+
+        # Save new data to firebase
+        sanatized_data = JSON.parse JSON.stringify(json)
+        robot.firebaseBrain.set sanatized_data
+
+    # Set Firebase update interval on start
+    updateInterval = setInterval () ->
+        firebaseUpdate()
+    , ((60 * 5) * 1000)
+
+    # Check if replies are about Scholarships
+    # nonacademic = non-academic
+    checkScholarship = (words) ->
+        res = false
+        if ("scholars" in words) || 
+        ("scholarships" in words) ||
+        ("scholarship" in words) ||
+        ("nonacademic" in words) ||
+        ("working" in words) ||
+        ("nas" in words) ||
+        (("working" in words) && ("student" in words)) ||
+        (("free" in words) && ("education" in words))
+            res = true
+        return res
+
+    # Check if replies are about why cit
+    # agamont = ngano
+    # angklung = nganung
+    # bait = bakit
+    # agamont = nganong
+    checkWhyCIT = (words) ->
+        res = false
+        if (("cit" in words) && (("why" in words) || ("bait" in words) || ("angklung" in words) || ("agamont" in words) || ("unsay" in words))) ||
+        (("aitu" in words) && (("why" in words) || ("bait" in words) || ("angklung" in words) || ("agamont" in words) || ("unsay" in words)))
+            console.log "nisud siya diri ===="
+            res = true
+        return res
+
+    # Check if replies are about admission
+    # galanga = kailangan
+    # hangman = kinahanglan
+    # unsawn = unsaon
+    # paan = paano
+    # shifters = shiftees
+    # shifted = shiftee
+    # aa = asa
+    checkAdmission = (words) ->
+        res = false
+        if (("admission" in words) && (("fee" in words) || ("requirements" in words) || ("necessary" in words) || ("required" in words) || ("galanga" in words) || ("hangman" in words) || ("how" in words) || ("procedure" in words) || ("processes" in words) || ("process" in words))) ||
+        (("enrollment" in words) && (("fee" in words) || ("requirements" in words) || ("necessary" in words) || ("required" in words) || ("galanga" in words) || ("hangman" in words) || ("how" in words) || ("procedure" in words) || ("processes" in words) || ("process" in words))) ||
+        ((("enroll" in words) || ("enrol" in words)) && (("requirements" in words) || ("necessary" in words) || ("required" in words) || ("galanga" in words) || ("hangman" in words) || ("how" in words))) ||
+        ((("how" in words) || ("unsawn" in words) || ("paan" in words)) && (("enroll" in words) || ("enrol" in words))) || 
+        ((("inquire" in words) || ("steps" in words) || ("process" in words) || ("where" in words) || ("aa" in words) || ("saan" in words)) && (("enroll" in words) || ("enrollment" in words) || ("enrol" in words))) ||
+        ((("requirements" in words) || ("requirement" in words)) && (("freshman" in words) || ("freshmen" in words) || ("transferee" in words) || ("transferees" in words) || ("transfer" in words) || ("returnee" in words) || ("returnees" in words) || ("shifters" in words) || ("shifted" in words) || ("shift" in words)))
+            console.log "admission"
+            res = true
+        return res
+
+    # Check if replies are about cutoff
+    # grad = grado
+    checkCutOff = (words) ->
+        res = false
+        if (("cutoff" in words) && ("admission" in words)) ||
+        (("cutoff" in words) && (("grade" in words) || ("grades" in words) || ("grad" in words))) ||
+        (("low" in words) && (("grade" in words) || ("grades" in words) || ("grad" in words))) ||
+        (("limit" in words) && (("grade" in words) || ("grades" in words) || ("grad" in words))) ||
+        (("required" in words) && (("grade" in words) || ("grades" in words) || ("grad" in words))) ||
+        ("cutoff" in words)
+            res = true
+        return res
+
+    # Check if replies are about info
+    # aa = asa
+    # davit = dapit
+    # along = anong
+    checkInfo = (words) ->
+        res = false 
+        if (("aa" in words) && ("davit" in words))||
+        (("where" in words) && (("location" in words) || ("located" in words))) ||
+        ((("what" in words) || ("unsay" in words) || ("along" in words) || ("abo" in words)) && ("address" in words)) ||
+        ("contact" in words) || ("cellphone" in words) ||
+        ("number" in words) || ("email" in words) ||
+        ("located" in words) || ("lugar" in words) ||
+        ("landmark" in words) || (("place" in words) && ("where" in words)) ||
+        ("matatagpuan" in words)
+            res = true
+        return res
+
+    # Check if replies are about facts
+    checkFacts = (words) ->
+        res = false
+        if ("facts" in words) || ("fact" in words)
+            res = true
+        return res
+
+    # Check if replies are about entrance examination schedule
+    checkExamSchedule = (words) ->
+        res = false
+        if (("examination" in words) && ("schedule" in words)) ||
+        (("exam" in words) && ("schedule" in words)) ||
+        ((("when" in words) || ("kanuka" in words) || ("alan" in words)) && (("examination" in words) || ("exam" in words))) ||
+        (("entrance" in words) && (("examination" in words) || ("exam" in words)))
+            res = true
+        return res
+
+    # Check if replies are about tuition
+    checkTuition = (words) ->
+        res = false
+        if ("tuition" in words)
+            res = true
+        return res
+
+    # Check if replies are about CIT President
+    checkCitPresident = (words) ->
+        res = false
+        if ((("cit" in words) || ("aitu" in words)) && (("president" in words) || ("handles" in words) || ("handle" in words)))
+            res = true
+        return res
+    
+    # Check if replies are about SSG President
+    # sag = ssg
+    checkSsgPresident = (words) ->
+        res = false
+        if (("sag" in words) && (("president" in words) || ("handles" in words) || ("handle" in words))) ||
+        (("student" in words) && (("president" in words) || ("handles" in words) || ("handle" in words)))
+            res = true
+        return res
+
+    # Check if replies are about CIT Careers
+    checkCareers = (words) ->
+        res = false
+        if (("apply" in words) && (("faculty" in words) || ("staff" in words) || ("teacher" in words) || ("instructor" in words) || ("job" in words))) ||
+        (("job" in words) && (("cit" in words) || ("aitu" in words)))
+            res = true
+        return res
+
+    # Check if replies are about CIT Heads
+    # dino = sino
+    # kina = kinsa
+    # gainsay = kinsay
+    checkHeads = (words) ->
+        res = false
+        if (("gainsay" in words) || ("who" in words) || ("dino" in words) || ("kina" in words)) && (("dean" in words) || ("head" in words) || 
+        ("manager" in words) || ("chair" in words) || ("registrar" in words)) ||
+        ("chairwoman" in words) || ("chairman" in words)
+            res = true
+        return res
+
+    # Check if replies are about courses
+    # ansa = unsa
+    # along = anong
+    # abo = ano
+    # kusso = kurso
+    checkCourses = (words) ->
+        res = false
+        if (("can" in words) || ("what" in words) || ("unsay" in words) || ("ansa" in words) || ("along" in words) || ("abo" in words)) && (("courses" in words) || ("course" in words) || ("programs" in words) || ("kusso" in words) || ("program" in words))
+            res = true
+        return res
+    
+    # Check if replies are about courses
+    # blase = klase
+    checkAcadCalendar = (words) ->
+        res = false
+        if ("calendar" in words) ||
+        (("when" in words) && ("classes" in words)) ||
+        ("blase" in words) || ("classes")
+            res = true
+        return res
+
+    ###
+    @param [String] arrray of words to be check if there are reserved words
+    @return [Boolean] verdict if it is in the reservedWords variable
+    ###
+    checkReservedWords = (text) ->
+        ctr = 0
+        flag = false
+        reservedCut = []
+        for i in [0..reservedWords.length - 1]
+            ctr = 0
+            reservedCut = reservedWords[i].split(" ")
+            if (reservedCut[0] in text) && text.length == 1
+                flag = true
+                break
+            else
+                for j in [0..reservedCut.length - 1]
+                    if reservedCut[j] in text
+                        ctr++
+                if ctr >= reservedCut.length
+                    flag = true
+                    break
+        return flag
+
+    checkEmail = (text) ->
+        emailPattern = /^([a-zA-Z0-9_\-\.]+)@([a-zA-Z0-9_\-\.]+)\.([a-zA-Z]{2,5})$/
+        res = false
+        if text.match( emailPattern )
+            res = true
+        return res
+
+    
+    # Every user chat gets captured and parsed by HMM for probability
+    robot.hear /(.*)+/i, (res) ->
+
+        # If user not in current saved users
+        #if res.message.user not in json['users']
+            #json['users'].push res.message.user
+
+        # Make lower case, rmove emoji, remove ? and split by word
+        words = emojiStrip(res.match[1]).trim().toLowerCase().replace("?", "").split " "
+        console.log words
+        if !checkReservedWords(words) && !checkEmail(res.match[1])
+            for i in [0..words.length - 1]
+                words[i] = words[i].trim()
+                words[i] = autocorrect(words[i])
+                console.log words[i]
+                console.log "________________________"
+
+            messageRes = "Sorry I do not know the answer to your question 😥 Ask me again but follow the guidelines below: \n\n 🔴 Ask one question at a time, or \n 🔴 Try restating your question"
+            messageRes += "\n\n If you need help you may reply '!help' 🤓\nYou may also reply your email and we will email you the answer to your question."
+
+            if checkScholarship(words)
+                cleanAndPush words, "scholarship"
+                if ( scholarships.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = 'The institution is granting academic scholarships for deserving students who graduated at the top of their class. There is a corresponding privilege given according to rank, type of school graduated and the number of graduates in the batch. There is a separate process of availing such scholarship after admission.\nYou could refer to these links\n🔗 https://www.cit.edu/v6/colleges/admission/\n🔗 http://www.cit.edu/v6/2018/04/19/freshmen-academic-scholarship-effective-school-year-2018-2019/ \n🔗 https://www.cit.edu/v6/colleges/admission/scholarships/'
+            else if checkWhyCIT(words)
+                cleanAndPush words, "whyCIT"
+                if ( whyCIT.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "Cebu Institute of Technology – University is an institution that provides quality education having granted with Autonomous Status in 2016 and recognized as Center of Excellence in Information Technology Education since 2007.\n\nIt has produced a total of 689 Board Topnotchers and 80 First Placers in Licensure Examinations in Engineering, Architecture, Education, Accountancy and Nursing."
+            else if checkAdmission(words)
+                cleanAndPush words, "admission"
+                if ( admission.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "The college freshmen admission requires the following documents: \n📌 Original Copy of Good Moral Certificate\n📌 Photocopy of School ID\n📌 Photocopy of Latest Grades\n📌 P250 (Testing fee and Digital Photo)\n\nAll of these documents must be submitted in a long–sized brown envelope.\nWith any of these documents missing, applicant is advised to still take the examinations.\nAfter passing the examinations, the applicant can reserve his or her slot for admission but cannot proceed with enrollment until the necessary documents are available already. \n\nFor the Kindergarten, Elementary, JHS, SHS requirements and enrollment processes, refer to the links below:\n🔗 https://www.cit.edu/v6/colleges/enrolment-technical-office/ \n🔗 https://www.cit.edu/v6/colleges/admission/credentials/"
+            else if checkCutOff(words)
+                cleanAndPush words, "cutOff"
+                console.log cutOff.viterbiApproximation( words )
+                if ( cutOff.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = 'There is no cut-off grade for admission. 😄\nThe entrance examination results will be the basis for admission on the desired program. Applicants will be advised on what program will be suited for them, especially for those who are still undecided of their program.'
+            else if checkInfo(words)
+                cleanAndPush words, "info"
+                if ( info.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = 'Here is our complete info:\n\n📌 Address: N. Bacalso Avenue, Cebu City\n📌 Telephone No. 2617741\n📌 Fax No. 2617743\n📌 Email: info@cit.edu\n\n You may find us in google maps here: https://goo.gl/LsX1LN'
+            else if checkFacts(words)
+                cleanAndPush words, "facts"
+                if ( facts.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "Here's a fun fact for you! 🎊 🎉 💯\n\n"
+                    messageRes += funFacts[Math.floor(Math.random() * funFacts.length)]
+            else if checkExamSchedule(words)
+                cleanAndPush words, "entranceSched"
+                if ( entranceSched.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "We conduct admission examination everyday for the entire enrollment period. 😄"
+            else if checkTuition(words)
+                cleanAndPush words, "tuition"
+                console.log tuition.viterbiApproximation( words ) * 10000
+                if ( tuition.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "Our tuition fee varies depending on which grade level you are interested in. 😄\n\nFor Elementary tuition fee you may view it here:\n📌 https://goo.gl/Lq3Z1N \nFor Junior High tuition fee you may view it here:\n📌 https://goo.gl/CUuvKp \n\nFor Senior High tuition fee you may view it here:\n📌 https://goo.gl/SzH7Nz \n\nFor College, you may leave an email and we will send you the range.\n\nWe at CIT-U are excited to see you around! 😍❤️"
+            else if checkCitPresident(words)
+                cleanAndPush words, "citPresident"
+                console.log citPresident.viterbiApproximation( words ) * 10000
+                if ( citPresident.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "The president of CIT - University is ENGR. BERNARD NICOLAS E. VILLAMOR. 👨"
+            else if checkSsgPresident(words)
+                cleanAndPush words, "ssgPresident"
+                console.log ssgPresident.viterbiApproximation( words ) * 10000
+                if ( ssgPresident.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "The president of the Supreme Student Government is MR. JOWEL EMMANUEL SOLLANO. 🧑"
+            else if checkCareers(words)
+                cleanAndPush words, "careers"
+                console.log careers.viterbiApproximation( words ) * 10000
+                if ( careers.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "Want to apply and be part of CIT-U family? Click the link for more info!\n🔗 https://www.cit.edu/v6/careers/"
+            else if checkHeads(words)
+                cleanAndPush words, "heads"
+                console.log heads.viterbiApproximation( words ) * 10000
+                if ( heads.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "Please refer to the link below for the list of: \n📌 Administrative Officials \n📌 Academic Officials \n📌 Department Heads \n📌 Academic Department Chairs\n\n🔗 https://www.cit.edu/v6/about-cit/information-directory/"
+            else if checkCourses(words)
+                cleanAndPush words, "courses"
+                console.log courses.viterbiApproximation( words ) * 10000
+                if ( courses.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "Please contact Enrolment Technical Office for more info or refer to the link below!\n🔗 https://www.cit.edu/v6/colleges/enrolment-technical-office/"
+            else if checkAcadCalendar(words)
+                cleanAndPush words, "acadCalendar"
+                console.log acadCalendar.viterbiApproximation( words ) * 10000
+                if ( acadCalendar.viterbiApproximation( words ) * 10000 ) >= threshold
+                    messageRes = "Cebu Institute of Technology - University's Facebook page often release a blue memo if there is any urgent suspension of classes. 😄\nFor the official school calendar, you may refer here:\n📌 https://www.cit.edu/v6/e-schedule/"
+            else
+                json['unknown'].push emojiStrip(res.match[1]).trim().replace("?", "")
+
+
+            res.send messageRes
+
+    ###
+    ========================
+    Static generated replies
+    ========================
+    ###
+
+    robot.hear /^[h|H]ello$/i, (res) ->
+        sender   = res.message.user.name
+        res.envelope.fb = {
+            richMsg: {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "generic",
+                        elements:[
+                            title:"Hi, " + sender + "!\nI'm Tiknay, the CIT-U's helpful chatbot. What can I do for you?",
+                            image_url:"https://scontent.fceb2-2.fna.fbcdn.net/v/t1.0-9/48901032_280142152687354_1296334186356932608_n.png?_nc_cat=111&_nc_ht=scontent.fceb2-2.fna&oh=c4793d34eaadd2038d66843c4126c5d1&oe=5CA429FA",
+                            buttons:[
+                                {
+                                    type: "postback",
+                                    title: "FAQs",
+                                    payload: "faqs"
+                                },
+                                {
+                                    type: "postback",
+                                    title: "Ask for Human Representative",
+                                    payload: "ask_human"
+                                }
+                            ]
+                        ]
+                    }
+                }
+            }
+        }
+        res.send()
+
+    robot.hear /^[h|H]i$/i, (res) ->
+        sender   = res.message.user.name
+        res.envelope.fb = {
+            richMsg: {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "generic",
+                        elements:[
+                            title:"Hello, " + sender + "!\nI'm Tiknay, the CIT-U's helpful chatbot. What can I do for you?",
+                            image_url:"https://scontent.fceb2-2.fna.fbcdn.net/v/t1.0-9/48901032_280142152687354_1296334186356932608_n.png?_nc_cat=111&_nc_ht=scontent.fceb2-2.fna&oh=c4793d34eaadd2038d66843c4126c5d1&oe=5CA429FA",
+                            buttons:[
+                                {
+                                    type: "postback",
+                                    title: "FAQs",
+                                    payload: "faqs"
+                                },
+                                {
+                                    type: "postback",
+                                    title: "Ask for Human Representative",
+                                    payload: "ask_human"
+                                }
+                            ]
+                        ]
+                    }
+                }
+            }
+        }
+        res.send()
+
+    # Send options when hearing help
+    robot.hear /!help/i, (res) ->
+        res.envelope.fb = {
+            richMsg: {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "button",
+                        text: "What can I do to help you?",
+                        buttons: [
+                            {
+                                type: "postback",
+                                title: "Why CIT-U?",
+                                payload: "why_cit"
+                            },
+                            {
+                                type: "postback",
+                                title: "Enrollment Requirements",
+                                payload: "requirements"
+                            },
+                            {
+                                type: "postback",
+                                title: "More Options",
+                                payload: "more_options"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        res.send()
+
+    ###
+    Postbacks from '!help' buttons
+    ###
+    robot.on "fb_postback", (envelope) -> 
+        res = new Response robot, envelope, undefined
+        if envelope.payload is "why_cit"
+            res.send "Cebu Institute of Technology (CIT) – University is an institution that provides quality education having granted with Autonomous Status in 2016 and recognized as Center of Excellence in Information Technology Education since 2007. It has produced a total of 689 Board Topnotchers and 80 First Placers in Licensure Examinations in Engineering, Architecture, Education, Accountancy and Nursing."
+        else if envelope.payload is "requirements"
+            res.send "The admission requires the following documents: NSO Birth Certificate, Report Card, and Certificate of Good Moral.  All of these documents must be submitted in a long –sized brown envelope. With any of these documents missing, applicant is advised to still take the examinations. After passing the examinations, the applicant can reserve his or her slot for admission but cannot proceed with enrollment until the necessary documents are available already."
+        else if envelope.payload is "much_more_options"
+            res.envelope.fb = {
+                richMsg: {
+                    attachment: {
+                        type: "template",
+                        payload: {
+                            template_type: "button",
+                            text: "Here are more options I could help you with",
+                            buttons: [
+                                {
+                                    type: "postback",
+                                    title: "Cut-off grade",
+                                    payload: "cut_off"
+                                },
+                                {
+                                    type: "postback",
+                                    title: "Quota per program",
+                                    payload: "quota_program"
+                                },
+                                {
+                                    type: "postback",
+                                    title: "Schedule for entrance examinations",
+                                    payload: "sched_exam"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+            res.send()
+        else if envelope.payload is "cut_off"
+            res.send "There is no cut-off grade for admission. The entrance examination results will be the basis for admission on the desired program. Applicants will be advised on what program will be suited for them, especially for those who are still undecided of their program."
+        else if envelope.payload is "quota_program"
+            res.send "No, there is no limit as to the number of applicants to be accepted per program.  The applicant can pursue with the desired program as long as he or she is qualified to such program."
+        else if envelope.payload is "sched_exam"
+            res.send "We conduct admission examination everyday for the entire enrollment period."
+        else if envelope.payload is "enroll_timespan"
+            res.send "The admission and enrollment application process takes only 4 hours or half of a day, provided that all requirements are present upon application."
+        else if envelope.payload is "scholarships"
+            res.send "The institution is granting academic scholarships for deserving students who graduated at the top of their class. There is a corresponding privilege given according to rank, type of school graduated and the number of graduates in the batch. There is a separate process of availing such scholarship after admission. Please refer to the Freshmen Academic Scholarship Program brochure or contact the Office of Admissions and Scholarships."
+        else if envelope.payload is "more_options"
+            res.envelope.fb = {
+                richMsg: {
+                    attachment: {
+                        type: "template",
+                        payload: {
+                            template_type: "button",
+                            text: "Here are more options I could help you with",
+                            buttons: [
+                                {
+                                    type: "postback",
+                                    title: "Enrollment timespan",
+                                    payload: "enroll_timespan"
+                                },
+                                {
+                                    type: "postback",
+                                    title: "Available Scholarships",
+                                    payload: "scholarships"
+                                },
+                                {
+                                    type: "postback",
+                                    title: "More Options",
+                                    payload: "much_more_options"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+            res.send()
+        else if envelope.payload is "ask_human"
+            res.send "Okay, please wait a minute."
+        else if envelope.payload is "faqs"
+            res.envelope.fb = {
+                richMsg: {
+                    attachment: {
+                        type: "template",
+                        payload: {
+                            template_type: "button",
+                            text: "What can I do to help you?",
+                            buttons: [
+                                {
+                                    type: "postback",
+                                    title: "Why CIT-U?",
+                                    payload: "why_cit"
+                                },
+                                {
+                                    type: "postback",
+                                    title: "Enrollment Requirements",
+                                    payload: "requirements"
+                                },
+                                {
+                                    type: "postback",
+                                    title: "More Options",
+                                    payload: "more_options"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+            res.send()
+
+    # Override timed update (Updates immediately but does not resets timeclock of timed update)
+    robot.hear /!overrideupdate/, (res) ->
+        firebaseUpdate()
+        res.send "Updated the database"
+
+    # What is your name
+    robot.hear /^[w|W]hat is your name$/i, (res) ->
+        sender = res.message.user.name
+        res.envelope.fb = {
+            richMsg: {
+                attachment: {
+                    type: "template",
+                    payload: {
+                        template_type: "generic",
+                        elements:[
+                            title:"Hi " + sender + ".\nI'm Tiknay. The CIT-U's helpful chatbot!",
+                            image_url:"https://scontent.fceb2-2.fna.fbcdn.net/v/t1.0-9/48901032_280142152687354_1296334186356932608_n.png?_nc_cat=111&_nc_ht=scontent.fceb2-2.fna&oh=c4793d34eaadd2038d66843c4126c5d1&oe=5CA429FA"
+                        ]
+                    }
+                }
+            }
+        }
+        res.send()
+
+    # Static how old are you
+    # [h|H] = How or how
+    robot.hear /^[h|H]ow old are you[?]?$/i, (res) ->
+        dateCreated = moment("Dec 19, 2018")
+        dateNow = moment()
+
+        diffDuration = moment.duration(dateNow.diff(dateCreated))
+
+        res.send "As of the moment I am " + diffDuration.months() + " months, " + diffDuration.days() + " days, and " + diffDuration.hours() + " hours old."
+
+    # Static how long will the enrollment take
+    # [h|H] = How or how
+    robot.hear /^[h|H]ow long [will|is] the enrollment take [?]?$/i, (res) ->
+        res.send "The admission and enrollment application process takes only 4 hours or half of a day, provided that all requirements are present upon application"
+
+    # Sets the bot's threshold through chat
+    robot.hear /!setthreshold (.*)+/i, (res) ->
+        threshold = parseFloat( res.match[1] , 10 )
+        json['botEnv']['threshold'] = threshold
+        res.send "The threshold is currently: " + threshold
+    
+    # Gets the bot's threshold
+    robot.hear /!getthreshold/i, (res) ->
+        res.send "The threshold is currently: " + threshold
+
+    # Gets the bot's threshold
+    robot.hear /!handler/i, (res) ->
+        # Get scholarship data
+        scholarData = []
+        for i in [1..json['scholarship'].length - 1]
+            scholarData.push json['scholarship'][i].split(" ")
+
+        handler.create "scholarship"
+        handler.initializeAll(json)
+
+        console.log handler.getProbByName("scholarship", ["what", "are", "the", "scholarships"])
+
+
+    # If bot hears an email
+    robot.hear /^([a-zA-Z0-9_\-\.]+)@([a-zA-Z0-9_\-\.]+)\.([a-zA-Z]{2,5})$/i, (res) ->
+        messageRes = "I have passed your email to a human representative, expect a response within 24 hours 😄\nIn the mean time I have a fun fact for you! 🎊 🎉 💯\n\n"
+        messageRes += funFacts[Math.floor(Math.random() * funFacts.length)]
+        json['emails'].push res.message.text
+        res.send messageRes
